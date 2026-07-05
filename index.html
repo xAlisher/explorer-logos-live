@@ -142,6 +142,12 @@ function hexToBytes(h){ h=h.replace(/^0x/,""); var a=new Uint8Array(h.length>>1)
 async function decodeContent(ch, tipSlot){
   var box=el("content");
   box.innerHTML='<div class="card spin" id="cscan">Decoding inscription content…</div>';
+  // (#14) Static index first — the indexer walked the chain once and recorded every channel's
+  // latest inscription, so any depth resolves instantly with no per-visit block walk.
+  try{
+    var idx=await fetch("channels.json?t="+Date.now()).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;});
+    if(idx&&idx.channels&&idx.channels[ch]&&idx.channels[ch].inscription){ renderContent(box, idx.channels[ch].inscription); return; }
+  }catch(e){}
   try{
     var info=await jget("/cryptarchia/info"); var ci=(info&&info.cryptarchia_info)||info||{};
     var hash=ci.tip, scanned=0, CAP=400;
@@ -159,7 +165,7 @@ async function decodeContent(ch, tipSlot){
       hash=blk.header.parent_block; scanned++;
       var s=document.getElementById("cscan"); if(s) s.textContent="Decoding inscription content… scanning block "+scanned+" (slot "+slot+")";
     }
-    box.innerHTML='<div class="card hint">Content not in the last '+scanned+' blocks — older inscriptions need an indexer (logos-live#14). The state proof above is definitive.</div>';
+    box.innerHTML='<div class="card hint">Content not in the last '+scanned+' blocks and not yet in the index — re-run the indexer (logos-live#14) to capture it. The state proof above is definitive.</div>';
   }catch(e){ box.innerHTML='<div class="card hint">Content decode unavailable ('+esc(e.message)+') — state proof above stands.</div>'; }
 }
 
