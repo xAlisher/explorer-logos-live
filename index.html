@@ -119,9 +119,22 @@ async function lookup(ch){
   }
 }
 
+function flash(b,msg){ var o=b.getAttribute("data-label")||b.textContent; b.setAttribute("data-label",o); b.textContent=msg; setTimeout(function(){b.textContent=o;},1200); }
+function copyText(text,b){
+  function fb(){
+    var ta=document.createElement("textarea"); ta.value=text;
+    ta.style.position="fixed"; ta.style.top="0"; ta.style.left="0"; ta.style.opacity="0";
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    var ok=false; try{ ok=document.execCommand("copy"); }catch(e){}
+    document.body.removeChild(ta); flash(b, ok?"copied ✓":"⌘C to copy");
+  }
+  if(navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(function(){flash(b,"copied ✓");}, fb);
+  } else { fb(); }
+}
 document.addEventListener("click",function(e){
   var b = e.target.closest("[data-copy]");
-  if(b){ navigator.clipboard.writeText(b.getAttribute("data-copy")); b.textContent="copied"; setTimeout(function(){b.textContent="copy";},1200); }
+  if(b) copyText(b.getAttribute("data-copy"), b);
 });
 el("go").addEventListener("click",function(){lookup(el("q").value);});
 el("q").addEventListener("keydown",function(e){if(e.key==="Enter")lookup(el("q").value);});
