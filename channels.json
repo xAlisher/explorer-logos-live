@@ -2,10 +2,10 @@
 "_meta": {
 "channels": 4,
 "node": "https://logos-testnet.paradox.computer",
-"scanned_blocks": 25,
+"scanned_blocks": 0,
 "tip": "2464d600414dc5220dfea8b1a855e53bbb14697d2b5f53e00f3b6184659b040d",
 "tip_slot": 446846,
-"updated_this_run": 3
+"updated_this_run": 0
 },
 "channels": {
 "0101010101010101010101010101010101010101010101010101010101010101": {
