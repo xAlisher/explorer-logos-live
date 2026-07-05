@@ -1,0 +1,33 @@
+name: reindex
+# logos-live#14 — auto-refresh channels.json so new inscriptions resolve hands-off.
+# Runs on GitHub's infra against public Paradox (no self-hosted node, no creds).
+on:
+  schedule:
+    - cron: '*/10 * * * *'      # every ~10 min (GitHub may delay under load)
+  workflow_dispatch:             # manual "refresh now" (gh workflow run reindex.yml)
+permissions:
+  contents: write
+concurrency:
+  group: reindex
+  cancel-in-progress: false
+jobs:
+  reindex:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: index (incremental — walks only new blocks since last run)
+        env:
+          NODE: https://logos-testnet.paradox.computer
+        run: python3 indexer.py 3000
+      - name: publish if changed
+        run: |
+          git config user.name  "logos-indexer[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add channels.json
+          if git diff --cached --quiet; then
+            echo "no change"
+          else
+            git commit -m "index: auto-refresh channels.json"
+            git pull --rebase --autostash || true
+            git push
+          fi
