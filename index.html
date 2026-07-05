@@ -54,6 +54,7 @@
     <button id="go">Look up</button>
   </div>
   <div id="out"></div>
+  <div id="content"></div>
   <div class="hint">
     Reads <code id="node"></code> via <code>/channel/&lt;id&gt;</code> and decodes the on-chain state:
     <b>finalized</b> (slot ≤ LIB) · <b>safe</b> (in a block) · <b>not inscribed</b> (no channel state).
@@ -86,7 +87,7 @@ async function lookup(ch){
   if(!/^[0-9a-f]{64}$/.test(ch)){ out.innerHTML = '<div class="card err">Enter a 64-character hex channel id.</div>'; return; }
   el("q").value = ch;
   if(location.hash.slice(1)!==ch) history.replaceState(null,"","#"+ch);
-  out.innerHTML = '<div class="card spin">Reading the chain…</div>';
+  out.innerHTML = '<div class="card spin">Reading the chain…</div>'; el("content").innerHTML = "";
   try{
     var info = await jget("/cryptarchia/info");
     var ci = (info && info.cryptarchia_info) || info || {};
@@ -115,6 +116,7 @@ async function lookup(ch){
       + '<div class="row"><span class="k">Accredited keys</span><span class="v">'+esc(keys)+'</span></div>'
       + '<div class="row"><span class="k">Proof link</span><span class="v">'+esc(link)+copyBtn(link)+'</span></div>'
       + '</div>';
+    decodeContent(ch, ts);
   }catch(e){
     out.innerHTML = '<div class="card err">Couldn\'t read the node: '+esc(e.message)+'</div>';
   }
@@ -133,6 +135,52 @@ function copyText(text,b){
     navigator.clipboard.writeText(text).then(function(){flash(b,"copied ✓");}, fb);
   } else { fb(); }
 }
+function hexToBytes(h){ h=h.replace(/^0x/,""); var a=new Uint8Array(h.length>>1); for(var i=0;i<a.length;i++) a[i]=parseInt(h.substr(i*2,2),16); return a; }
+
+// Walk the block chain from the tip (blocks are sparse ~1/30 slots) to find the channel's
+// latest ChannelInscribe (opcode 17), decode its inscription bytes → JSON → nested keeper label.
+async function decodeContent(ch, tipSlot){
+  var box=el("content");
+  box.innerHTML='<div class="card spin" id="cscan">Decoding inscription content…</div>';
+  try{
+    var info=await jget("/cryptarchia/info"); var ci=(info&&info.cryptarchia_info)||info||{};
+    var hash=ci.tip, scanned=0, CAP=400;
+    while(hash && scanned<CAP){
+      var blk=await jget("/cryptarchia/blocks/"+hash);
+      if(blk.__notfound || !blk.header) break;
+      var slot=parseInt(blk.header.slot,10), insc=null;
+      (blk.transactions||[]).forEach(function(tx){
+        (((tx.mantle_tx||{}).ops)||[]).forEach(function(op){
+          if(String(op.opcode)==="17" && op.payload && op.payload.channel_id===ch) insc=op.payload.inscription;
+        });
+      });
+      if(insc){ renderContent(box, insc); return; }
+      if(!isNaN(tipSlot) && !isNaN(slot) && slot<tipSlot) break;
+      hash=blk.header.parent_block; scanned++;
+      var s=document.getElementById("cscan"); if(s) s.textContent="Decoding inscription content… scanning block "+scanned+" (slot "+slot+")";
+    }
+    box.innerHTML='<div class="card hint">Content not in the last '+scanned+' blocks — older inscriptions need an indexer (logos-live#14). The state proof above is definitive.</div>';
+  }catch(e){ box.innerHTML='<div class="card hint">Content decode unavailable ('+esc(e.message)+') — state proof above stands.</div>'; }
+}
+
+function renderContent(box, insc){
+  var txt = new TextDecoder("utf-8").decode(typeof insc==="string" ? hexToBytes(insc) : new Uint8Array(insc));
+  var a=txt.indexOf("{"), b=txt.lastIndexOf("}"), obj=null;
+  if(a>=0&&b>a){ try{ obj=JSON.parse(txt.slice(a,b+1)); }catch(e){} }
+  if(!obj){ box.innerHTML='<div class="card"><div class="k">Inscription (non-JSON / binary)</div><div class="v" style="justify-content:flex-start;text-align:left">'+esc(txt.slice(0,100))+'…</div></div>'; return; }
+  var label=obj; try{ if(typeof obj.label==="string") label=JSON.parse(obj.label); }catch(e){}
+  var files=(label&&label.files)||[];
+  var frows=files.map(function(f){ return '<div class="row"><span class="k">'+esc(f.name||"file")+'</span><span class="v">'+esc(short(f.cid||""))+copyBtn(f.cid||"")+'</span></div>'; }).join("");
+  box.innerHTML='<div class="card">'
+    +'<div class="status" style="margin-bottom:4px"><span class="dot" style="background:var(--accent)"></span>Inscribed content</div>'
+    +((label&&label.title)?'<div class="row"><span class="k">Title</span><span class="v">'+esc(String(label.title).trim())+'</span></div>':'')
+    +(obj.type?'<div class="row"><span class="k">Type</span><span class="v">'+esc(obj.type)+'</span></div>':'')
+    +(obj.cid?'<div class="row"><span class="k">Collection</span><span class="v">'+esc(obj.cid)+copyBtn(obj.cid)+'</span></div>':'')
+    +((label&&label.source)?'<div class="row"><span class="k">Source</span><span class="v">'+esc(label.source)+'</span></div>':'')
+    +(files.length?'<div class="row"><span class="k">Files</span><span class="v">'+files.length+'</span></div>'+frows:'')
+    +'</div>';
+}
+
 document.addEventListener("click",function(e){
   var b = e.target.closest("[data-copy]");
   if(b) copyText(b.getAttribute("data-copy"), b);
