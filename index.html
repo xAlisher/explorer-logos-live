@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Logos Inscription Explorer</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#141821; --panel2:#1b202b; --border:#262d3a;
+    --text:#e7ecf3; --muted:#8b95a7; --accent:#ff5000;
+    --green:#2ecc71; --yellow:#f1c40f; --red:#e74c3c; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5}
+  header{padding:28px 20px 8px;max-width:820px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 4px;font-weight:700}
+  .sub{color:var(--muted);font-size:14px}
+  main{max-width:820px;margin:0 auto;padding:16px 20px 60px}
+  .searchrow{display:flex;gap:8px;margin:18px 0}
+  input{flex:1;background:var(--panel);border:1px solid var(--border);border-radius:10px;color:var(--text);
+    padding:12px 14px;font-family:var(--mono);font-size:13px;outline:none}
+  input:focus{border-color:var(--accent)}
+  button{background:var(--accent);border:none;border-radius:10px;color:#fff;padding:12px 20px;font-weight:600;cursor:pointer;font-size:14px}
+  button.ghost{background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 10px;font-size:12px;font-weight:500}
+  button.ghost:hover{color:var(--text);border-color:var(--muted)}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px;margin-top:14px}
+  .status{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:15px}
+  .dot{width:10px;height:10px;border-radius:50%}
+  .badge{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:999px;border:1px solid}
+  .b-final{color:var(--green);border-color:var(--green)}
+  .b-safe{color:var(--yellow);border-color:var(--yellow)}
+  .b-none{color:var(--muted);border-color:var(--border)}
+  .row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--border);font-size:13px}
+  .row:first-of-type{border-top:none}
+  .k{color:var(--muted)}
+  .v{font-family:var(--mono);word-break:break-all;text-align:right;display:flex;align-items:center;gap:8px;justify-content:flex-end}
+  .hint{color:var(--muted);font-size:12.5px;margin-top:16px}
+  a{color:var(--accent);text-decoration:none}
+  .err{color:var(--red)}
+  .spin{color:var(--muted)}
+  code{font-family:var(--mono);background:var(--panel2);padding:1px 5px;border-radius:5px;font-size:12px}
+  footer{max-width:820px;margin:0 auto;padding:0 20px 40px;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Logos Inscription Explorer</h1>
+  <div class="sub">Read-only proof of on-chain inscriptions — paste a channel id.</div>
+</header>
+<main>
+  <div class="searchrow">
+    <input id="q" placeholder="channel id (64 hex) — e.g. 3a9d3849…" spellcheck="false" autocomplete="off">
+    <button id="go">Look up</button>
+  </div>
+  <div id="out"></div>
+  <div class="hint">
+    Reads <code id="node"></code> via <code>/channel/&lt;id&gt;</code> and decodes the on-chain state:
+    <b>finalized</b> (slot ≤ LIB) · <b>safe</b> (in a block) · <b>not inscribed</b> (no channel state).
+    Shareable link: <code>explorer.logos.live/#&lt;channel_id&gt;</code>.
+  </div>
+</main>
+<footer>Logos v0.2 testnet · read-only · no wallet, no keys.</footer>
+<script>
+"use strict";
+var NODE = "https://logos-testnet.paradox.computer";
+document.getElementById("node").textContent = NODE;
+
+function el(id){return document.getElementById(id);}
+function esc(s){return String(s).replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
+function short(h){return h && h.length>20 ? h.slice(0,10)+"…"+h.slice(-8) : h;}
+function copyBtn(val){return '<button class="ghost" data-copy="'+esc(val)+'">copy</button>';}
+
+async function jget(path){
+  var r = await fetch(NODE+path, {headers:{"accept":"application/json"}});
+  if(r.status===404) return {__notfound:true};
+  var t = await r.text();
+  if(r.status>=500 || /channel not found/i.test(t)) return {__notfound:true};
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return JSON.parse(t);
+}
+
+async function lookup(ch){
+  ch = (ch||"").trim().toLowerCase().replace(/^0x/,"");
+  var out = el("out");
+  if(!/^[0-9a-f]{64}$/.test(ch)){ out.innerHTML = '<div class="card err">Enter a 64-character hex channel id.</div>'; return; }
+  el("q").value = ch;
+  if(location.hash.slice(1)!==ch) history.replaceState(null,"","#"+ch);
+  out.innerHTML = '<div class="card spin">Reading the chain…</div>';
+  try{
+    var info = await jget("/cryptarchia/info");
+    var ci = (info && info.cryptarchia_info) || info || {};
+    var lib = ci.lib_slot, tip = ci.slot;
+    var chan = await jget("/channel/"+ch);
+    if(chan.__notfound){
+      out.innerHTML = '<div class="card">'
+        + '<span class="status"><span class="dot" style="background:var(--muted)"></span>Not inscribed</span> '
+        + '<span class="badge b-none">no state</span>'
+        + '<div class="hint">No channel state on this node yet — nothing has been inscribed to '
+        + '<code>'+esc(short(ch))+'</code>, or it hasn\'t propagated here.</div></div>';
+      return;
+    }
+    var ts = chan.tip_slot, tm = chan.tip_message || "";
+    var finalized = (typeof lib==="number" && typeof ts==="number") ? ts<=lib : false;
+    var badge = finalized ? '<span class="badge b-final">finalized</span>'
+                          : '<span class="badge b-safe">safe · finalizing</span>';
+    var keys = (chan.accredited_keys||[]).map(function(k){return short(k);}).join(", ") || "—";
+    var link = location.origin + location.pathname + "#" + ch;
+    out.innerHTML = '<div class="card">'
+      + '<span class="status"><span class="dot" style="background:'+(finalized?"var(--green)":"var(--yellow)")+'"></span>Inscribed on-chain</span> '+badge
+      + '<div class="row"><span class="k">Channel id</span><span class="v">'+esc(short(ch))+copyBtn(ch)+'</span></div>'
+      + '<div class="row"><span class="k">Tip message</span><span class="v">'+esc(short(tm))+copyBtn(tm)+'</span></div>'
+      + '<div class="row"><span class="k">Tip slot</span><span class="v">'+esc(ts)+'</span></div>'
+      + '<div class="row"><span class="k">Node LIB / tip</span><span class="v">'+esc(lib)+' / '+esc(tip)+'</span></div>'
+      + '<div class="row"><span class="k">Accredited keys</span><span class="v">'+esc(keys)+'</span></div>'
+      + '<div class="row"><span class="k">Proof link</span><span class="v">'+esc(link)+copyBtn(link)+'</span></div>'
+      + '</div>';
+  }catch(e){
+    out.innerHTML = '<div class="card err">Couldn\'t read the node: '+esc(e.message)+'</div>';
+  }
+}
+
+document.addEventListener("click",function(e){
+  var b = e.target.closest("[data-copy]");
+  if(b){ navigator.clipboard.writeText(b.getAttribute("data-copy")); b.textContent="copied"; setTimeout(function(){b.textContent="copy";},1200); }
+});
+el("go").addEventListener("click",function(){lookup(el("q").value);});
+el("q").addEventListener("keydown",function(e){if(e.key==="Enter")lookup(el("q").value);});
+window.addEventListener("hashchange",function(){var h=location.hash.slice(1);if(h)lookup(h);});
+if(location.hash.slice(1)) lookup(location.hash.slice(1));
+</script>
+</body>
+</html>
