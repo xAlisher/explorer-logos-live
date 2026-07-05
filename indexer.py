@@ -28,6 +28,19 @@ def get(path):
                                           "User-Agent": "logos-live-indexer/1"})
     return json.load(urllib.request.urlopen(req, timeout=25))
 
+def is_user_inscription(insc_hex):
+    """User inscriptions decode to JSON with our markers; LEZ sequencer ops are binary → skip
+    (keeps the index to real content and stops constant-churn commits from L2 sequencer channels)."""
+    try:
+        raw = bytes.fromhex(insc_hex).decode("utf-8")
+        a, b = raw.find("{"), raw.rfind("}")
+        if a < 0 or b <= a:
+            return False
+        obj = json.loads(raw[a:b + 1])
+        return isinstance(obj, dict) and any(k in obj for k in ("type", "cid", "label", "files"))
+    except Exception:
+        return False
+
 def main():
     max_blocks = int(sys.argv[1]) if len(sys.argv) > 1 else 2000
     # load existing index → incremental frontier
@@ -54,7 +67,7 @@ def main():
                     p = op.get("payload") or {}
                     ch = p.get("channel_id")
                     # first-seen walking tip→back is this channel's newest op in the range
-                    if ch and ch not in fresh and p.get("inscription"):
+                    if ch and ch not in fresh and p.get("inscription") and is_user_inscription(p["inscription"]):
                         fresh[ch] = {"inscription": p.get("inscription"),
                                      "parent": p.get("parent"),
                                      "signer": p.get("signer"),
@@ -65,6 +78,8 @@ def main():
             break
         h = parent
     channels = dict(old); channels.update(fresh)   # fresh (newer) overrides
+    # prune LEZ sequencer / non-user channels (constant churn, not content)
+    channels = {ch: v for ch, v in channels.items() if is_user_inscription(v.get("inscription", ""))}
     out = {"_meta": {"tip": tip, "tip_slot": tip_slot, "scanned_blocks": scanned,
                      "node": NODE, "channels": len(channels), "updated_this_run": len(fresh)},
            "channels": channels}
