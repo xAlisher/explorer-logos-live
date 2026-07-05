@@ -18,16 +18,19 @@ jobs:
       - name: index (incremental — walks only new blocks since last run)
         env:
           NODE: https://logos-testnet.paradox.computer
-        run: python3 indexer.py 3000
-      - name: publish if changed
+        run: python3 indexer.py 1200
+      - name: publish only if the channel index changed (ignore tip churn)
         run: |
           git config user.name  "logos-indexer[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add channels.json
-          if git diff --cached --quiet; then
-            echo "no change"
+          NEW=$(python3 -c "import json;print(json.dumps(json.load(open('channels.json')).get('channels',{}),sort_keys=True))")
+          OLD=$(git show HEAD:channels.json | python3 -c "import sys,json;print(json.dumps(json.load(sys.stdin).get('channels',{}),sort_keys=True))" 2>/dev/null || echo "")
+          if [ "$NEW" = "$OLD" ]; then
+            echo "channel index unchanged — no commit"
+            git checkout -- channels.json || true
           else
-            git commit -m "index: auto-refresh channels.json"
+            git add channels.json
+            git commit -m "index: new/updated inscription(s)"
             git pull --rebase --autostash || true
             git push
           fi
