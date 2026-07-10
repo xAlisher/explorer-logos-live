@@ -28,18 +28,30 @@ def get(path):
                                           "User-Agent": "logos-live-indexer/1"})
     return json.load(urllib.request.urlopen(req, timeout=25))
 
-def is_user_inscription(insc_hex):
-    """User inscriptions decode to JSON with our markers; LEZ sequencer ops are binary → skip
-    (keeps the index to real content and stops constant-churn commits from L2 sequencer channels)."""
+def user_obj(insc_hex):
+    """Decode a user inscription to its JSON object, or None. User inscriptions decode to
+    JSON with our markers; LEZ sequencer ops are binary → skipped (keeps the index to real
+    content and stops constant-churn commits from L2 sequencer channels)."""
     try:
         raw = bytes.fromhex(insc_hex).decode("utf-8")
         a, b = raw.find("{"), raw.rfind("}")
         if a < 0 or b <= a:
-            return False
+            return None
         obj = json.loads(raw[a:b + 1])
-        return isinstance(obj, dict) and any(k in obj for k in ("type", "cid", "label", "files"))
+        if isinstance(obj, dict) and any(k in obj for k in ("type", "cid", "label", "files")):
+            return obj
     except Exception:
-        return False
+        pass
+    return None
+
+def is_user_inscription(insc_hex):
+    return user_obj(insc_hex) is not None
+
+def insc_cid(insc_hex):
+    """The per-inscription key = the payload's `cid` — that IS 'what was inscribed', and it is
+    the field a per-item deep-link (#<channel>/<cid>, beacon#55) resolves against."""
+    obj = user_obj(insc_hex)
+    return (obj or {}).get("cid") or ""
 
 def main():
     max_blocks = int(sys.argv[1]) if len(sys.argv) > 1 else 2000
@@ -54,7 +66,10 @@ def main():
             pass
     info = get("/cryptarchia/info").get("cryptarchia_info", {})
     tip, tip_slot = info.get("tip"), info.get("slot")
-    h, scanned, fresh = tip, 0, {}
+    # fresh[ch]        = channel's NEWEST inscription (top-level, drives the #<channel> view)
+    # fresh_bycid[ch]  = {cid → inscription} for EVERY inscription seen this run, so a per-item
+    #                    deep-link (#<channel>/<cid>) resolves to the exact item, not just the tip.
+    h, scanned, fresh, fresh_bycid = tip, 0, {}, {}
     while h and scanned < max_blocks:
         if prev_tip and h == prev_tip:          # reached already-indexed frontier
             break
@@ -65,21 +80,39 @@ def main():
             for op in (((tx.get("mantle_tx") or {}).get("ops")) or []):
                 if str(op.get("opcode")) == "17":
                     p = op.get("payload") or {}
-                    ch = p.get("channel_id")
+                    ch, insc = p.get("channel_id"), p.get("inscription")
+                    if not (ch and insc and is_user_inscription(insc)):
+                        continue
                     # first-seen walking tip→back is this channel's newest op in the range
-                    if ch and ch not in fresh and p.get("inscription") and is_user_inscription(p["inscription"]):
-                        fresh[ch] = {"inscription": p.get("inscription"),
+                    if ch not in fresh:
+                        fresh[ch] = {"inscription": insc,
                                      "parent": p.get("parent"),
                                      "signer": p.get("signer"),
                                      "slot": slot, "block": h}
+                    # record EVERY inscription, keyed by its cid (first-seen = newest per cid wins)
+                    cid = insc_cid(insc)
+                    if cid:
+                        fresh_bycid.setdefault(ch, {}).setdefault(
+                            cid, {"inscription": insc, "slot": slot, "block": h})
         scanned += 1
         parent = hdr.get("parent_block")
         if not parent or parent == h:
             break
         h = parent
-    channels = dict(old); channels.update(fresh)   # fresh (newer) overrides
+    channels = dict(old); channels.update(fresh)   # fresh (newer) overrides top-level
     # prune LEZ sequencer / non-user channels (constant churn, not content)
     channels = {ch: v for ch, v in channels.items() if is_user_inscription(v.get("inscription", ""))}
+    # Merge the per-cid maps: backfill legacy entries (pre-deep-link index had no `inscriptions`)
+    # from their own top-level inscription, then layer this run's finds on top (fresh wins per cid).
+    for ch, v in channels.items():
+        ins = dict(v.get("inscriptions") or {})
+        if not ins:                              # legacy entry → seed from the single stored inscription
+            cid0 = insc_cid(v.get("inscription", ""))
+            if cid0:
+                ins[cid0] = {"inscription": v.get("inscription"),
+                             "slot": v.get("slot"), "block": v.get("block")}
+        ins.update(fresh_bycid.get(ch, {}))
+        v["inscriptions"] = ins
     out = {"_meta": {"tip": tip, "tip_slot": tip_slot, "scanned_blocks": scanned,
                      "node": NODE, "channels": len(channels), "updated_this_run": len(fresh)},
            "channels": channels}
