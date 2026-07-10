@@ -99,19 +99,27 @@ def main():
         if not parent or parent == h:
             break
         h = parent
-    channels = dict(old); channels.update(fresh)   # fresh (newer) overrides top-level
+    # Merge. fresh (newer) overrides the top-level newest inscription, but the per-cid
+    # `inscriptions` map must ACCUMULATE across runs: a channel getting a new item must NOT
+    # drop its previously-indexed items (they're usually older than this incremental run's
+    # walk window, so they won't be re-seen — a plain overwrite would lose them and break
+    # their deep-links). Carry the old map forward, then layer this run's finds on top.
+    channels = {ch: dict(v) for ch, v in old.items()}
+    for ch, v in fresh.items():
+        carried = (channels.get(ch) or {}).get("inscriptions") or {}
+        channels[ch] = dict(v)
+        channels[ch]["inscriptions"] = dict(carried)
     # prune LEZ sequencer / non-user channels (constant churn, not content)
     channels = {ch: v for ch, v in channels.items() if is_user_inscription(v.get("inscription", ""))}
-    # Merge the per-cid maps: backfill legacy entries (pre-deep-link index had no `inscriptions`)
-    # from their own top-level inscription, then layer this run's finds on top (fresh wins per cid).
     for ch, v in channels.items():
         ins = dict(v.get("inscriptions") or {})
-        if not ins:                              # legacy entry → seed from the single stored inscription
-            cid0 = insc_cid(v.get("inscription", ""))
-            if cid0:
-                ins[cid0] = {"inscription": v.get("inscription"),
-                             "slot": v.get("slot"), "block": v.get("block")}
-        ins.update(fresh_bycid.get(ch, {}))
+        # ensure the channel's newest (top-level) is always addressable — covers both legacy
+        # entries (no map yet) and a just-updated channel whose new tip must be keyed too.
+        cidN = insc_cid(v.get("inscription", ""))
+        if cidN and cidN not in ins:
+            ins[cidN] = {"inscription": v.get("inscription"),
+                         "slot": v.get("slot"), "block": v.get("block")}
+        ins.update(fresh_bycid.get(ch, {}))     # this run's finds (newest per cid wins)
         v["inscriptions"] = ins
     out = {"_meta": {"tip": tip, "tip_slot": tip_slot, "scanned_blocks": scanned,
                      "node": NODE, "channels": len(channels), "updated_this_run": len(fresh)},
