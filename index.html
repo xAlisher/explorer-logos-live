@@ -58,7 +58,8 @@
   <div class="hint">
     Reads <code id="node"></code> via <code>/channel/&lt;id&gt;</code> and decodes the on-chain state:
     <b>finalized</b> (slot ≤ LIB) · <b>safe</b> (in a block) · <b>not inscribed</b> (no channel state).
-    Shareable link: <code>explorer.logos.live/#&lt;channel_id&gt;</code>.
+    Shareable link: <code>#&lt;channel_id&gt;</code> (whole channel) or
+    <code>#&lt;channel_id&gt;/&lt;cid&gt;</code> (one inscription).
   </div>
 </main>
 <footer>Logos v0.2 testnet · read-only · no wallet, no keys.</footer>
@@ -81,12 +82,14 @@ async function jget(path){
   return JSON.parse(t);
 }
 
-async function lookup(ch){
+async function lookup(ch, cid){
   ch = (ch||"").trim().toLowerCase().replace(/^0x/,"");
+  cid = (cid||"").trim();
   var out = el("out");
   if(!/^[0-9a-f]{64}$/.test(ch)){ out.innerHTML = '<div class="card err">Enter a 64-character hex channel id.</div>'; return; }
   el("q").value = ch;
-  if(location.hash.slice(1)!==ch) history.replaceState(null,"","#"+ch);
+  var want = cid ? ch + "/" + cid : ch;
+  if(location.hash.slice(1)!==want) history.replaceState(null,"","#"+want);
   out.innerHTML = '<div class="card spin">Reading the chain…</div>'; el("content").innerHTML = "";
   try{
     var info = await jget("/cryptarchia/info");
@@ -106,7 +109,7 @@ async function lookup(ch){
     var badge = finalized ? '<span class="badge b-final">finalized</span>'
                           : '<span class="badge b-safe">safe · finalizing</span>';
     var keys = (chan.accredited_keys||[]).map(function(k){return short(k);}).join(", ") || "—";
-    var link = location.origin + location.pathname + "#" + ch;
+    var link = location.origin + location.pathname + "#" + want;
     out.innerHTML = '<div class="card">'
       + '<span class="status"><span class="dot" style="background:'+(finalized?"var(--green)":"var(--yellow)")+'"></span>Inscribed on-chain</span> '+badge
       + '<div class="row"><span class="k">Channel id</span><span class="v">'+esc(short(ch))+copyBtn(ch)+'</span></div>'
@@ -116,7 +119,7 @@ async function lookup(ch){
       + '<div class="row"><span class="k">Accredited keys</span><span class="v">'+esc(keys)+'</span></div>'
       + '<div class="row"><span class="k">Proof link</span><span class="v">'+esc(link)+copyBtn(link)+'</span></div>'
       + '</div>';
-    decodeContent(ch, ts);
+    decodeContent(ch, ts, cid);
   }catch(e){
     out.innerHTML = '<div class="card err">Couldn\'t read the node: '+esc(e.message)+'</div>';
   }
@@ -139,14 +142,23 @@ function hexToBytes(h){ h=h.replace(/^0x/,""); var a=new Uint8Array(h.length>>1)
 
 // Walk the block chain from the tip (blocks are sparse ~1/30 slots) to find the channel's
 // latest ChannelInscribe (opcode 17), decode its inscription bytes → JSON → nested keeper label.
-async function decodeContent(ch, tipSlot){
+// Decode inscription content. With a `cid`, resolve THAT exact inscription (the per-item
+// deep-link, beacon#55); without one, the channel's latest (the #<channel> view).
+async function decodeContent(ch, tipSlot, cid){
   var box=el("content");
   box.innerHTML='<div class="card spin" id="cscan">Decoding inscription content…</div>';
   // (#14) Static index first — the indexer walked the chain once and recorded every channel's
-  // latest inscription, so any depth resolves instantly with no per-visit block walk.
+  // inscriptions (keyed by cid), so any item at any depth resolves instantly, no per-visit walk.
   try{
     var idx=await fetch("channels.json?t="+Date.now()).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;});
-    if(idx&&idx.channels&&idx.channels[ch]&&idx.channels[ch].inscription){ renderContent(box, idx.channels[ch].inscription); return; }
+    var ce = idx && idx.channels && idx.channels[ch];
+    if(ce){
+      if(cid){
+        var one = (ce.inscriptions||{})[cid];
+        if(one && one.inscription){ renderContent(box, one.inscription, {ch:ch, cid:cid, specific:true}); return; }
+        // fall through to the live walk — a just-inscribed item may not be in the static index yet
+      } else if(ce.inscription){ renderContent(box, ce.inscription, {ch:ch}); return; }
+    }
   }catch(e){}
   try{
     var info=await jget("/cryptarchia/info"); var ci=(info&&info.cryptarchia_info)||info||{};
@@ -157,19 +169,35 @@ async function decodeContent(ch, tipSlot){
       var slot=parseInt(blk.header.slot,10), insc=null;
       (blk.transactions||[]).forEach(function(tx){
         (((tx.mantle_tx||{}).ops)||[]).forEach(function(op){
-          if(String(op.opcode)==="17" && op.payload && op.payload.channel_id===ch) insc=op.payload.inscription;
+          // match the channel, and — for a deep-link — the specific inscription by its cid
+          if(String(op.opcode)==="17" && op.payload && op.payload.channel_id===ch
+             && (!cid || payloadCid(op.payload.inscription)===cid)) insc=op.payload.inscription;
         });
       });
-      if(insc){ renderContent(box, insc); return; }
-      if(!isNaN(tipSlot) && !isNaN(slot) && slot<tipSlot) break;
+      if(insc){ renderContent(box, insc, {ch:ch, cid:cid, specific:!!cid}); return; }
+      if(!cid && !isNaN(tipSlot) && !isNaN(slot) && slot<tipSlot) break;   // channel view: stop past the tip
       hash=blk.header.parent_block; scanned++;
       var s=document.getElementById("cscan"); if(s) s.textContent="Decoding inscription content… scanning block "+scanned+" (slot "+slot+")";
     }
-    box.innerHTML='<div class="card hint">Content not in the last '+scanned+' blocks and not yet in the index — re-run the indexer (logos-live#14) to capture it. The state proof above is definitive.</div>';
+    box.innerHTML='<div class="card hint">'
+      +(cid ? 'Inscription <code>'+esc(cid)+'</code> not found in the last '+scanned+' blocks or the index'
+            : 'Content not in the last '+scanned+' blocks and not yet in the index')
+      +' — re-run the indexer (logos-live#14) to capture it. The state proof above is definitive.</div>';
   }catch(e){ box.innerHTML='<div class="card hint">Content decode unavailable ('+esc(e.message)+') — state proof above stands.</div>'; }
 }
 
-function renderContent(box, insc){
+// Pull the `cid` out of an inscription's raw bytes (mirror of indexer.insc_cid) — used to match
+// a specific inscription during the live block walk.
+function payloadCid(insc){
+  try{
+    var txt=new TextDecoder("utf-8").decode(typeof insc==="string"?hexToBytes(insc):new Uint8Array(insc));
+    var a=txt.indexOf("{"), b=txt.lastIndexOf("}"); if(a<0||b<=a) return "";
+    var o=JSON.parse(txt.slice(a,b+1)); return (o&&o.cid)||"";
+  }catch(e){ return ""; }
+}
+
+function renderContent(box, insc, opts){
+  opts = opts || {};
   var txt = new TextDecoder("utf-8").decode(typeof insc==="string" ? hexToBytes(insc) : new Uint8Array(insc));
   var a=txt.indexOf("{"), b=txt.lastIndexOf("}"), obj=null;
   if(a>=0&&b>a){ try{ obj=JSON.parse(txt.slice(a,b+1)); }catch(e){} }
@@ -177,8 +205,13 @@ function renderContent(box, insc){
   var label=obj; try{ if(typeof obj.label==="string") label=JSON.parse(obj.label); }catch(e){}
   var files=(label&&label.files)||[];
   var frows=files.map(function(f){ return '<div class="row"><span class="k">'+esc(f.name||"file")+'</span><span class="v">'+esc(short(f.cid||""))+copyBtn(f.cid||"")+'</span></div>'; }).join("");
+  // When this is a per-item deep-link, name it so and offer a way back to the full channel.
+  var head = opts.specific
+    ? '<div class="hint" style="margin:0 0 8px">Showing one inscription · <a href="#'+esc(opts.ch||"")+'">view whole channel</a></div>'
+    : '';
   box.innerHTML='<div class="card">'
-    +'<div class="status" style="margin-bottom:4px"><span class="dot" style="background:var(--accent)"></span>Inscribed content</div>'
+    +'<div class="status" style="margin-bottom:4px"><span class="dot" style="background:var(--accent)"></span>Inscribed content'+(opts.specific?' · this item':'')+'</div>'
+    + head
     +((label&&label.title)?'<div class="row"><span class="k">Title</span><span class="v">'+esc(String(label.title).trim())+'</span></div>':'')
     +(obj.type?'<div class="row"><span class="k">Type</span><span class="v">'+esc(obj.type)+'</span></div>':'')
     +(obj.cid?'<div class="row"><span class="k">Collection</span><span class="v">'+esc(obj.cid)+copyBtn(obj.cid)+'</span></div>':'')
@@ -191,10 +224,18 @@ document.addEventListener("click",function(e){
   var b = e.target.closest("[data-copy]");
   if(b) copyText(b.getAttribute("data-copy"), b);
 });
+// Hash is either "#<channel>" (whole channel) or "#<channel>/<cid>" (one inscription — the
+// per-item deep-link beacon emits, beacon#55). Split on the FIRST "/" only: cids may contain
+// ":" (e.g. "ia:privatemattersin00smit") but never "/".
+function parseHash(){
+  var h = location.hash.slice(1);
+  var i = h.indexOf("/");
+  return i < 0 ? {ch:h, cid:""} : {ch:h.slice(0,i), cid:decodeURIComponent(h.slice(i+1))};
+}
 el("go").addEventListener("click",function(){lookup(el("q").value);});
 el("q").addEventListener("keydown",function(e){if(e.key==="Enter")lookup(el("q").value);});
-window.addEventListener("hashchange",function(){var h=location.hash.slice(1);if(h)lookup(h);});
-if(location.hash.slice(1)) lookup(location.hash.slice(1));
+window.addEventListener("hashchange",function(){var p=parseHash();if(p.ch)lookup(p.ch,p.cid);});
+var ph=parseHash(); if(ph.ch) lookup(ph.ch, ph.cid);
 </script>
 </body>
 </html>
